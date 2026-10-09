@@ -1,0 +1,52 @@
+name: Xcode environment check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/xcode-check.yml'
+      - 'ci/**'
+  pull_request:
+    paths:
+      - '.github/workflows/xcode-check.yml'
+      - 'ci/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xcode-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Inspect Xcode and iOS SDKs
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          xcodebuild -showsdks
+
+      - name: Verify iOS SwiftUI compilation
+        run: |
+          SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          ARCH="$(uname -m)"
+          xcrun --sdk iphonesimulator swiftc \
+            -typecheck \
+            -sdk "$SDK_PATH" \
+            -target "${ARCH}-apple-ios17.0-simulator" \
+            ci/SDKSmokeCheck.swift
+
+      - name: Summarize verification
+        run: |
+          {
+            echo '## Xcode environment verified'
+            echo 'The iOS Simulator SDK successfully type-checked SwiftUI source.'
+            echo 'This checks the toolchain; no app archive or signed IPA is produced.'
+          } >> "$GITHUB_STEP_SUMMARY"
