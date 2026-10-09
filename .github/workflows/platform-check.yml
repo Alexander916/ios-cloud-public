@@ -1,0 +1,72 @@
+name: Linux and Windows environment check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/platform-check.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/platform-check.yml'
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: System to check
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - linux
+          - windows
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-check-${{ github.event.pull_request.number || github.ref }}-${{ inputs.platform || 'all' }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify Linux tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -a
+          git --version
+          node --version
+          npm --version
+          python3 --version
+          docker --version
+          python3 -c 'import platform; assert platform.system() == "Linux"; print("Linux runtime verified")'
+          echo '## Linux environment verified' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Git, Node.js, npm, Python and Docker CLI are available. No application build is configured yet.' >> "$GITHUB_STEP_SUMMARY"
+
+  windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows'
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify Windows tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $PSVersionTable
+          git --version
+          node --version
+          npm --version
+          python --version
+          dotnet --list-sdks
+          python -c 'import platform; assert platform.system() == "Windows"; print("Windows runtime verified")'
+          '## Windows environment verified' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          'Git, Node.js, npm, Python and .NET SDKs are available. No application build is configured yet.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
