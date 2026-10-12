@@ -32,6 +32,24 @@
 
 `commit_changes` 默认关闭。先下载工作流产生的诊断 artifact 检查 Codex 的修改，确认后再开启该选项，让工作流把修改提交回本次运行的分支。此工作流只支持手动运行，不对 Pull Request 自动暴露 API 密钥。
 
+也可以在本地 Codex 终端中用 GitHub CLI 控制它：
+
+```powershell
+gh workflow run codex-xcode-agent.yml `
+  --repo Alexander916/ios-cloud-public `
+  --ref main `
+  -f prompt='读取 build.log，修复 Xcode 编译错误并保持改动最小' `
+  -f project_path='YourApp/YourApp.xcodeproj' `
+  -f scheme='YourApp' `
+  -f commit_changes=false
+
+gh run list --repo Alexander916/ios-cloud-public --workflow codex-xcode-agent.yml --limit 3
+gh run watch RUN_ID --repo Alexander916/ios-cloud-public --exit-status
+gh run download RUN_ID --repo Alexander916/ios-cloud-public
+```
+
+把 `project_path` 换成 `.xcworkspace` 时使用 `workspace_path`，并填写对应 Scheme。`commit_changes=true` 时，只有构建成功且工作流完成后才会把 Codex 的修改提交回运行所在分支。
+
 ## 接入 Codex 云端
 
 1. 在 Codex 选择云端任务，创建或选择云端环境。
