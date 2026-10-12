@@ -26,7 +26,7 @@
 
 ## 在 macOS Runner 中运行 Codex
 
-首次使用前，在仓库的 Settings → Secrets and variables → Actions 中添加 `OPENAI_API_KEY`。不要把密钥写入代码、工作流输入或日志。
+首次使用前，在仓库的 Settings → Secrets and variables → Actions 中添加 `OPENAI_API_KEY`。当前工作流使用 CCSwitch 的 Bensz Responses 端点和 `gpt-6.1-sol`，不要把密钥写入代码、工作流输入或日志。
 
 打开 Actions → Codex Xcode agent → Run workflow，然后填写 Codex 任务。接入实际 App 后，同时填写 `.xcodeproj` 或 `.xcworkspace` 路径和 Scheme；工作流会先用模拟器 SDK 编译，再让 Codex 读取 `build.log`，最后重新编译验证。
 
