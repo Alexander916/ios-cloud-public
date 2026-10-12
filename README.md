@@ -11,6 +11,7 @@
 - `AGENTS.md` 提供 Codex 项目说明；`.gitignore` 排除常见签名文件和本地构建文件。
 - `Linux and Windows environment check` 提供 Ubuntu 24.04 与 Windows Server 2022 两套任务，验证 Git、Node.js、npm、Python，Linux 额外检查 Docker CLI，Windows 额外检查 .NET SDK。
 - 在 Actions 手动运行此工作流时，可选择 `all` / `linux` / `windows`；修改其工作流时也会自动检查两个系统。
+- `Codex Xcode agent` 可手动启动 macOS Runner，在 Runner 内运行官方 Codex GitHub Action，并按提示检查和修复 Xcode 构建。
 
 ## 选择运行系统
 
@@ -22,6 +23,14 @@
 
 每次任务使用临时运行器，结束后环境会销毁。这是执行构建、测试和脚本的环境，不提供长期在线桌面。
 添加实际项目后，应补充依赖安装、构建命令、测试命令和产物上传，并更新自动触发的路径范围。
+
+## 在 macOS Runner 中运行 Codex
+
+首次使用前，在仓库的 Settings → Secrets and variables → Actions 中添加 `OPENAI_API_KEY`。不要把密钥写入代码、工作流输入或日志。
+
+打开 Actions → Codex Xcode agent → Run workflow，然后填写 Codex 任务。接入实际 App 后，同时填写 `.xcodeproj` 或 `.xcworkspace` 路径和 Scheme；工作流会先用模拟器 SDK 编译，再让 Codex 读取 `build.log`，最后重新编译验证。
+
+`commit_changes` 默认关闭。先下载工作流产生的诊断 artifact 检查 Codex 的修改，确认后再开启该选项，让工作流把修改提交回本次运行的分支。此工作流只支持手动运行，不对 Pull Request 自动暴露 API 密钥。
 
 ## 接入 Codex 云端
 

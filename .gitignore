@@ -12,3 +12,7 @@ build/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+.codex-run-prompt.md
+build.log
+codex-output.md
+codex.patch

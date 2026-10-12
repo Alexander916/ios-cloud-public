@@ -1,0 +1,204 @@
+name: Codex Xcode agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: Task for Codex to perform in the checked-out repository
+        required: true
+        type: string
+      project_path:
+        description: Optional path to an .xcodeproj file
+        required: false
+        type: string
+        default: ''
+      workspace_path:
+        description: Optional path to an .xcworkspace file (takes precedence over project_path)
+        required: false
+        type: string
+        default: ''
+      scheme:
+        description: Xcode scheme to build when an app project is present
+        required: false
+        type: string
+        default: ''
+      commit_changes:
+        description: Commit Codex changes back to the dispatched branch
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-xcode-agent-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  agent:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Inspect Xcode environment
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun swift --version
+          xcodebuild -showsdks
+
+      - name: Write Codex task prompt
+        env:
+          USER_PROMPT: ${{ inputs.prompt }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+          WORKSPACE_PATH: ${{ inputs.workspace_path }}
+          SCHEME: ${{ inputs.scheme }}
+        run: |
+          set -euo pipefail
+          {
+            echo '# Codex task'
+            echo
+            printf '%s\n' "$USER_PROMPT"
+            echo
+            echo '# Constraints'
+            echo '- Work only in the checked-out repository.'
+            echo '- Read build.log when it exists and fix the Xcode or Swift issue it reports.'
+            echo '- Do not read, print, or modify secrets, certificates, provisioning profiles, or unrelated files.'
+            echo '- Do not commit or push; the workflow handles that separately when requested.'
+            echo
+            echo '# Build inputs'
+            printf 'project_path=%s\n' "$PROJECT_PATH"
+            printf 'workspace_path=%s\n' "$WORKSPACE_PATH"
+            printf 'scheme=%s\n' "$SCHEME"
+          } > .codex-run-prompt.md
+
+      - name: Initial Xcode build
+        id: initial_build
+        env:
+          PROJECT_PATH: ${{ inputs.project_path }}
+          WORKSPACE_PATH: ${{ inputs.workspace_path }}
+          SCHEME: ${{ inputs.scheme }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          : > build.log
+          if [[ -z "$SCHEME" || ( -z "$PROJECT_PATH" && -z "$WORKSPACE_PATH" ) ]]; then
+            echo 'No project_path/workspace_path and scheme were supplied; skipping app build.' | tee build.log
+            echo 'status=skipped' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          set +e
+          if [[ -n "$WORKSPACE_PATH" ]]; then
+            xcodebuild \
+              -workspace "$WORKSPACE_PATH" \
+              -scheme "$SCHEME" \
+              -sdk iphonesimulator \
+              -destination 'generic/platform=iOS Simulator' \
+              -derivedDataPath DerivedData \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              build 2>&1 | tee -a build.log
+          else
+            xcodebuild \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME" \
+              -sdk iphonesimulator \
+              -destination 'generic/platform=iOS Simulator' \
+              -derivedDataPath DerivedData \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              build 2>&1 | tee -a build.log
+          fi
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run Codex on the macOS Runner
+        id: codex
+        uses: openai/codex-action@1d82a3dba7c7988ec71ecae1ed5b8e8db96495c5 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .codex-run-prompt.md
+          output-file: codex-output.md
+          permission-profile: ':workspace'
+          codex-args: '["--ephemeral"]'
+
+      - name: Rebuild after Codex changes
+        id: repair_build
+        if: ${{ inputs.scheme != '' && (inputs.workspace_path != '' || inputs.project_path != '') }}
+        env:
+          PROJECT_PATH: ${{ inputs.project_path }}
+          WORKSPACE_PATH: ${{ inputs.workspace_path }}
+          SCHEME: ${{ inputs.scheme }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          if [[ -n "$WORKSPACE_PATH" ]]; then
+            xcodebuild \
+              -workspace "$WORKSPACE_PATH" \
+              -scheme "$SCHEME" \
+              -sdk iphonesimulator \
+              -destination 'generic/platform=iOS Simulator' \
+              -derivedDataPath DerivedData \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              build 2>&1 | tee -a build.log
+          else
+            xcodebuild \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME" \
+              -sdk iphonesimulator \
+              -destination 'generic/platform=iOS Simulator' \
+              -derivedDataPath DerivedData \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              build 2>&1 | tee -a build.log
+          fi
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Commit Codex changes
+        if: ${{ inputs.commit_changes && success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --quiet; then
+            echo 'Codex made no repository changes.'
+            exit 0
+          fi
+          git add -A
+          git commit -m 'chore: apply Codex Xcode repair'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Save Codex and build diagnostics
+        if: always()
+        run: |
+          {
+            echo '## Codex Xcode agent'
+            echo "Initial build status: ${{ steps.initial_build.outputs.status || 'not-run' }}"
+            echo "Repair build status: ${{ steps.repair_build.outputs.status || 'not-run' }}"
+            echo "Codex action outcome: ${{ steps.codex.outcome || 'not-run' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          git diff --binary > codex.patch || true
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codex-xcode-agent-${{ github.run_number }}
+          if-no-files-found: warn
+          path: |
+            build.log
+            codex-output.md
+            codex.patch
