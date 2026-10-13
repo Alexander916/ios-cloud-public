@@ -5,6 +5,7 @@
 ## 已配置
 
 - `Xcode environment check` 检查 Xcode、Swift 和 iOS SDK，并类型检查一段 iOS SwiftUI 代码。
+- `iOS simulator build` 在提交/PR 涉及 iOS 项目时自动构建，并可手动选择工程、Scheme 和是否运行模拟器测试。
 - 修改 main 分支的 `ci/` 或检查工作流时自动运行，对相同路径的 Pull Request 也运行。
 - 可以在 Actions → Xcode environment check → Run workflow 手动运行。
 - 工作流使用只读权限，不需要任何 Apple 凭据。
@@ -18,6 +19,7 @@
 | 工作流 | 系统 | 当前验证内容 |
 | --- | --- | --- |
 | Xcode environment check | macOS 15 | Xcode、iOS SDK、SwiftUI 类型检查 |
+| iOS simulator build | macOS 15 / Xcode 16.4 | 解析依赖、构建 iOS Simulator `.app`，可选运行测试并上传 `.xcresult` |
 | Linux and Windows environment check：linux | Ubuntu 24.04 | Linux 和常用开发工具 |
 | Linux and Windows environment check：windows | Windows Server 2022 | Windows 和常用开发工具 |
 
@@ -49,6 +51,14 @@ gh run download RUN_ID --repo Alexander916/ios-cloud-public
 ```
 
 把 `project_path` 换成 `.xcworkspace` 时使用 `workspace_path`，并填写对应 Scheme。`commit_changes=true` 时，只有构建成功且工作流完成后才会把 Codex 的修改提交回运行所在分支。
+
+## iOS 构建环境
+
+`iOS simulator build` 使用标准 GitHub `macos-15` Runner 和 Xcode 16.4，明确选择该 Runner 自带的 Xcode，检查 iOS SDK 与可用模拟器，并把 Clang/Swift 模块缓存放在 Runner 临时目录。工作流自动解析 Swift Package Manager 依赖；存在 `Podfile` 时运行 CocoaPods（优先使用仓库 `Gemfile` 锁定版本）；存在 `Cartfile` 时运行 Carthage。
+
+工程需提交到仓库并提供 shared scheme。手动运行可留空工程路径让工作流自动发现；只有一个 shared scheme 时可自动选择，多个 Scheme 时填写 `scheme`。默认构建未签名的模拟器 `.app`，不需要 Apple Developer 证书。可打开 `run_tests` 运行 iPhone 16 模拟器测试。每次构建会上传 `.app`、构建日志以及可用的 `.xcresult`。
+
+此环境不包含 iOS 真机签名或 TestFlight 发布。要生成可安装设备/商店的 IPA，仍需 Apple Developer 证书、Provisioning Profile、Bundle ID 和单独的签名/导出工作流。
 
 ## 接入 Codex 云端
 

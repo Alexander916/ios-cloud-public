@@ -1,0 +1,242 @@
+name: iOS simulator build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ios-build.yml'
+      - 'ci/**'
+      - '**/*.swift'
+      - '**/*.xcodeproj/project.pbxproj'
+      - '**/*.xcworkspace/contents.xcworkspacedata'
+      - '**/Package.swift'
+      - '**/Package.resolved'
+      - '**/Podfile'
+      - '**/Podfile.lock'
+      - '**/Cartfile'
+      - '**/Cartfile.resolved'
+  pull_request:
+    paths:
+      - '.github/workflows/ios-build.yml'
+      - 'ci/**'
+      - '**/*.swift'
+      - '**/*.xcodeproj/project.pbxproj'
+      - '**/*.xcworkspace/contents.xcworkspacedata'
+      - '**/Package.swift'
+      - '**/Package.resolved'
+      - '**/Podfile'
+      - '**/Podfile.lock'
+      - '**/Cartfile'
+      - '**/Cartfile.resolved'
+  workflow_dispatch:
+    inputs:
+      project_path:
+        description: Optional .xcodeproj path; auto-detected when blank
+        required: false
+        type: string
+        default: ''
+      workspace_path:
+        description: Optional .xcworkspace path; takes precedence over project_path
+        required: false
+        type: string
+        default: ''
+      scheme:
+        description: Shared Xcode scheme; auto-selected only when exactly one exists
+        required: false
+        type: string
+        default: ''
+      run_tests:
+        description: Run unit/UI tests on an iOS Simulator
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      PROJECT_INPUT: ${{ inputs.project_path }}
+      WORKSPACE_INPUT: ${{ inputs.workspace_path }}
+      SCHEME_INPUT: ${{ inputs.scheme }}
+      RUN_TESTS: ${{ inputs.run_tests || 'false' }}
+      DERIVED_DATA: ${{ github.workspace }}/DerivedData
+      RESULT_BUNDLE: ${{ github.workspace }}/build/Tests.xcresult
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Select and verify Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -d /Applications/Xcode_16.4.app/Contents/Developer ]]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          else
+            echo 'Xcode 16.4 is not installed; using the macOS Runner default Xcode.'
+          fi
+          xcodebuild -version
+          xcrun swift --version
+          xcodebuild -showsdks
+          xcrun simctl list devices available
+          mkdir -p "$RUNNER_TEMP/clang-module-cache" "$RUNNER_TEMP/swift-module-cache" build
+
+      - name: Locate project, dependencies, and scheme
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          root = pathlib.Path.cwd()
+          workspace_input = os.environ.get("WORKSPACE_INPUT", "").strip()
+          project_input = os.environ.get("PROJECT_INPUT", "").strip()
+          scheme_input = os.environ.get("SCHEME_INPUT", "").strip()
+
+          def checked_path(value, suffix):
+              path = (root / value).resolve()
+              if root.resolve() not in path.parents or path.suffix != suffix or not path.exists():
+                  raise SystemExit(f"Invalid or missing {suffix} path: {value}")
+              return path
+
+          if workspace_input:
+              project = checked_path(workspace_input, ".xcworkspace")
+              kind = "workspace"
+          elif project_input:
+              project = checked_path(project_input, ".xcodeproj")
+              kind = "project"
+          else:
+              workspaces = sorted(root.glob("**/*.xcworkspace"))
+              workspaces = [p for p in workspaces if ".git" not in p.parts and "Pods" not in p.parts]
+              projects = sorted(root.glob("**/*.xcodeproj"))
+              projects = [p for p in projects if ".git" not in p.parts and "Pods" not in p.parts]
+              if workspaces:
+                  project, kind = workspaces[0], "workspace"
+              elif projects:
+                  project, kind = projects[0], "project"
+              else:
+                  raise SystemExit("No .xcodeproj or .xcworkspace found. Add the iOS app project to this repository first.")
+              if len(workspaces) + len(projects) > 1:
+                  print(f"Multiple Xcode containers found; using {project.relative_to(root)}")
+
+          repo_root = project.parent
+          podfile = repo_root / "Podfile"
+          cartfile = repo_root / "Cartfile"
+          if podfile.exists():
+              if (repo_root / "Gemfile").exists():
+                  subprocess.run(["bundle", "install", "--jobs", "4", "--retry", "3"], cwd=repo_root, check=True)
+                  subprocess.run(["bundle", "exec", "pod", "install", "--deployment"], cwd=repo_root, check=True)
+              else:
+                  subprocess.run(["sudo", "gem", "install", "cocoapods", "--no-document"], check=True)
+                  subprocess.run(["pod", "install"], cwd=repo_root, check=True)
+              generated = sorted(repo_root.glob("*.xcworkspace"))
+              if generated:
+                  project, kind = generated[0], "workspace"
+
+          if cartfile.exists():
+              check = subprocess.run(["carthage", "version"], capture_output=True, text=True)
+              if check.returncode:
+                  subprocess.run(["brew", "install", "carthage"], check=True)
+              subprocess.run(["carthage", "bootstrap", "--use-xcframeworks", "--platform", "iOS"], cwd=repo_root, check=True)
+
+          args = ["xcodebuild", "-list", "-json", "-" + kind, str(project)]
+          listing = subprocess.run(args, check=True, capture_output=True, text=True)
+          data = json.loads(listing.stdout)
+          schemes = data.get("workspace" if kind == "workspace" else "project", {}).get("schemes", [])
+          if scheme_input:
+              if scheme_input not in schemes:
+                  raise SystemExit(f"Scheme '{scheme_input}' not found. Available shared schemes: {', '.join(schemes)}")
+              scheme = scheme_input
+          elif len(schemes) == 1:
+              scheme = schemes[0]
+          else:
+              raise SystemExit(f"Provide a shared scheme. Available schemes: {', '.join(schemes) or '(none)'}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"container_kind={kind}\n")
+              out.write(f"container_path={project.relative_to(root)}\n")
+              out.write(f"scheme={scheme}\n")
+          print(f"Selected {kind}: {project.relative_to(root)}")
+          print(f"Selected scheme: {scheme}")
+          PY
+
+      - name: Resolve Swift Package Manager dependencies
+        shell: bash
+        env:
+          CONTAINER_KIND: ${{ steps.project.outputs.container_kind }}
+          CONTAINER_PATH: ${{ steps.project.outputs.container_path }}
+          SCHEME: ${{ steps.project.outputs.scheme }}
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies \
+            "-$CONTAINER_KIND" "$CONTAINER_PATH" \
+            -scheme "$SCHEME"
+
+      - name: Build for iOS Simulator
+        shell: bash
+        env:
+          CONTAINER_KIND: ${{ steps.project.outputs.container_kind }}
+          CONTAINER_PATH: ${{ steps.project.outputs.container_path }}
+          SCHEME: ${{ steps.project.outputs.scheme }}
+        run: |
+          set -o pipefail
+          xcodebuild \
+            "-$CONTAINER_KIND" "$CONTAINER_PATH" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$DERIVED_DATA" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+            CLANG_MODULE_CACHE_PATH="$RUNNER_TEMP/clang-module-cache" \
+            SWIFT_MODULE_CACHE_PATH="$RUNNER_TEMP/swift-module-cache" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee build/build.log
+
+      - name: Run tests on iOS Simulator
+        if: ${{ inputs.run_tests == true }}
+        shell: bash
+        env:
+          CONTAINER_KIND: ${{ steps.project.outputs.container_kind }}
+          CONTAINER_PATH: ${{ steps.project.outputs.container_path }}
+          SCHEME: ${{ steps.project.outputs.scheme }}
+        run: |
+          set -o pipefail
+          xcodebuild \
+            "-$CONTAINER_KIND" "$CONTAINER_PATH" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -derivedDataPath "$DERIVED_DATA" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+            -resultBundlePath "$RESULT_BUNDLE" \
+            CLANG_MODULE_CACHE_PATH="$RUNNER_TEMP/clang-module-cache" \
+            SWIFT_MODULE_CACHE_PATH="$RUNNER_TEMP/swift-module-cache" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            test 2>&1 | tee build/test.log
+
+      - name: Upload build products and test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-simulator-build-${{ github.run_number }}
+          if-no-files-found: warn
+          path: |
+            DerivedData/Build/Products/Debug-iphonesimulator/*.app
+            build/*.log
+            build/*.xcresult

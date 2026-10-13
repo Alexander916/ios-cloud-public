@@ -35,11 +35,13 @@ jobs:
 
       - name: Verify iOS SwiftUI compilation
         run: |
+          mkdir -p "$RUNNER_TEMP/clang-module-cache"
           SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path)"
           ARCH="$(uname -m)"
           xcrun --sdk iphonesimulator swiftc \
             -typecheck \
             -sdk "$SDK_PATH" \
+            -module-cache-path "$RUNNER_TEMP/clang-module-cache" \
             -target "${ARCH}-apple-ios17.0-simulator" \
             ci/SDKSmokeCheck.swift
 
